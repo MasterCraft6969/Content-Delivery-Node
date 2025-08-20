@@ -1,0 +1,12 @@
+{
+    "password_hash": "",
+    "secret_key": "",
+    "admin_path": "",
+    "discord_bot_token": "",
+    "base_url": "https://example.com",
+    "authorized_user_ids": [
+        "123456789012345678",
+        "972218395955171381"
+    ]
+}
+
