@@ -84,9 +84,10 @@ class RenameModal(Modal, title='Rename File'):
                 metadata[new_filename] = metadata.pop(self.original_filename)
                 save_metadata(metadata)
             
-            self.parent_view.query = None 
+            self.parent_view.selected_file = None
             self.parent_view.update_file_options()
-            for item in self.parent_view.children: item.disabled = isinstance(item, Button)
+            for item in self.parent_view.children:
+                if isinstance(item, Button): item.disabled = True
             self.parent_view.select_file.disabled = not self.parent_view.select_file.options
             
             await interaction.response.edit_message(content=f"Success: Renamed to **{new_filename}**. Select a file.", view=self.parent_view)
@@ -96,8 +97,9 @@ class RenameModal(Modal, title='Rename File'):
 
 
 class SearchModal(Modal, title="Search for Files"):
-    def __init__(self):
+    def __init__(self, parent_view: 'FileManagementView'):
         super().__init__()
+        self.parent_view = parent_view
         self.query_input = TextInput(
             label="Search Query",
             placeholder="Leave blank to show all files.",
@@ -107,8 +109,18 @@ class SearchModal(Modal, title="Search for Files"):
 
     async def on_submit(self, interaction: discord.Interaction):
         query = str(self.query_input.value).strip() or None
-        new_view = FileManagementView(query=query)
-        await interaction.response.edit_message(content=new_view.message_content, view=new_view)
+        self.parent_view.query = query
+        self.parent_view.selected_file = None
+        
+        self.parent_view.update_file_options()
+        for item in self.parent_view.children:
+            if isinstance(item, Button): item.disabled = True
+        
+        message_content = "Select a file to get started."
+        if query:
+            message_content = f"Showing results for \"{query}\". Select a file."
+
+        await interaction.response.edit_message(content=message_content, view=self.parent_view)
 
 
 
@@ -154,12 +166,83 @@ class FileManagementView(View):
     def __init__(self, query: str = None):
         super().__init__(timeout=300)
         self.query = query
-        self.message_content = "Select a file to get started."
-        if self.query:
-            self.message_content = f"Showing results for \"{self.query}\". Select a file."
         self.selected_file = None
-        self.update_file_options()
+        self.add_item(self.create_select_menu())
+        self.add_action_buttons()
 
+    def create_select_menu(self):
+        self.select_file = Select(row=0, placeholder="Select a file to manage...")
+        self.update_file_options()
+        
+        async def select_callback(interaction: discord.Interaction):
+            self.selected_file = self.select_file.values[0]
+            await self.update_message_after_action(interaction, self.selected_file)
+        
+        self.select_file.callback = select_callback
+        return self.select_file
+
+    def add_action_buttons(self):
+        self.button_rename = Button(label="Rename", style=discord.ButtonStyle.primary, emoji="✏️", row=1, disabled=True)
+        self.button_set_password = Button(label="Set Password", style=discord.ButtonStyle.secondary, emoji="🔑", row=1, disabled=True)
+        self.button_set_lock = Button(label="Set Lock", style=discord.ButtonStyle.secondary, emoji="🔒", row=1, disabled=True)
+        self.button_delete = Button(label="Delete", style=discord.ButtonStyle.danger, emoji="🗑️", row=2, disabled=True)
+        self.button_get_link = Button(label="Get Link", style=discord.ButtonStyle.success, emoji="🔗", row=2, disabled=True)
+        self.button_rerun_query = Button(label="Search", style=discord.ButtonStyle.blurple, emoji="🔍", row=2)
+
+        async def rename_callback(interaction: discord.Interaction):
+            await interaction.response.send_modal(RenameModal(self, self.selected_file))
+        async def password_callback(interaction: discord.Interaction):
+            await interaction.response.send_modal(ManageFileModal(self, self.selected_file, 'password'))
+        async def lock_callback(interaction: discord.Interaction):
+            await interaction.response.send_modal(ManageFileModal(self, self.selected_file, 'lock'))
+        async def delete_callback(interaction: discord.Interaction):
+            file_path = os.path.join(UPLOAD_FOLDER, self.selected_file)
+            if os.path.exists(file_path):
+                os.remove(file_path)
+                metadata = load_metadata()
+                if self.selected_file in metadata:
+                    del metadata[self.selected_file]
+                    save_metadata(metadata)
+                
+                self.selected_file = None
+                self.update_file_options()
+                for item in self.children: 
+                    if isinstance(item, Button): item.disabled = True
+                self.button_rerun_query.disabled = False
+                self.select_file.disabled = not self.select_file.options
+                message_content = f"Success: Deleted file. Select a new file."
+                await interaction.response.edit_message(content=message_content, view=self)
+            else:
+                await interaction.response.edit_message(content=f"Error: '{self.selected_file}' no longer exists.", view=None)
+        async def link_callback(interaction: discord.Interaction):
+            metadata = load_metadata()
+            file_meta = metadata.get(self.selected_file, {})
+            base_link = f"{BASE_URL}/files/{self.selected_file}"
+            if password := file_meta.get('password'):
+                link = f"<{base_link}?password={password}>"
+                message_content = f"Link for **{self.selected_file}** (includes password):\n{link}"
+            else:
+                link = f"<{base_link}>"
+                message_content = f"Link for **{self.selected_file}**:\n{link}"
+            await interaction.response.send_message(message_content, ephemeral=True)
+            
+        async def search_callback(interaction: discord.Interaction):
+            await interaction.response.send_modal(SearchModal(self))
+
+        self.button_rename.callback = rename_callback
+        self.button_set_password.callback = password_callback
+        self.button_set_lock.callback = lock_callback
+        self.button_delete.callback = delete_callback
+        self.button_get_link.callback = link_callback
+        self.button_rerun_query.callback = search_callback
+
+        self.add_item(self.button_rename)
+        self.add_item(self.button_set_password)
+        self.add_item(self.button_set_lock)
+        self.add_item(self.button_delete)
+        self.add_item(self.button_get_link)
+        self.add_item(self.button_rerun_query)
+        
     def update_file_options(self):
         self.select_file.options.clear()
         try:
@@ -189,65 +272,11 @@ class FileManagementView(View):
             limit = file_meta.get('visit_limit')
             lock_status = f"**Lock:** {count}/{limit} visits"
 
-        self.message_content = f"Managing: **{filename}**\n\n{pwd_status}\n{lock_status}\n\nSelect an action."
+        message_content = f"Managing: **{filename}**\n{pwd_status}\n{lock_status}\n\nSelect an action."
         for item in self.children:
             if isinstance(item, Button): item.disabled = False 
-        await interaction.response.edit_message(content=self.message_content, view=self)
-
-    @discord.ui.select(row=0)
-    async def select_file(self, interaction: discord.Interaction, select: Select):
-        self.selected_file = select.values[0]
-        await self.update_message_after_action(interaction, self.selected_file)
-
-    @discord.ui.button(label="Rename", style=discord.ButtonStyle.primary, emoji="✏️", row=1, disabled=True)
-    async def button_rename(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.send_modal(RenameModal(self, self.selected_file))
-
-    @discord.ui.button(label="Set Password", style=discord.ButtonStyle.secondary, emoji="🔑", row=1, disabled=True)
-    async def button_set_password(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.send_modal(ManageFileModal(self, self.selected_file, 'password'))
-
-    @discord.ui.button(label="Set Lock", style=discord.ButtonStyle.secondary, emoji="🔒", row=1, disabled=True)
-    async def button_set_lock(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.send_modal(ManageFileModal(self, self.selected_file, 'lock'))
-
-    @discord.ui.button(label="Delete", style=discord.ButtonStyle.danger, emoji="🗑️", row=2, disabled=True)
-    async def button_delete(self, interaction: discord.Interaction, button: Button):
-        file_path = os.path.join(UPLOAD_FOLDER, self.selected_file)
-        if os.path.exists(file_path):
-            os.remove(file_path)
-            metadata = load_metadata()
-            if self.selected_file in metadata:
-                del metadata[self.selected_file]
-                save_metadata(metadata)
-            
-            self.update_file_options()
-            for item in self.children: item.disabled = isinstance(item, Button)
-            self.select_file.disabled = not self.select_file.options
-            self.message_content = f"Success: Deleted **{self.selected_file}**. Select a new file."
-            await interaction.response.edit_message(content=self.message_content, view=self)
-        else:
-            await interaction.response.edit_message(content=f"Error: '{self.selected_file}' no longer exists.", view=None)
-
-    @discord.ui.button(label="Get Link", style=discord.ButtonStyle.success, emoji="🔗", row=2, disabled=True)
-    async def button_get_link(self, interaction: discord.Interaction, button: Button):
-        metadata = load_metadata()
-        file_meta = metadata.get(self.selected_file, {})
-        base_link = f"{BASE_URL}/files/{self.selected_file}"
         
-        if password := file_meta.get('password'):
-            link = f"<{base_link}?password={password}>"
-            self.message_content = f"Link for **{self.selected_file}** (includes password):\n\n{link}"
-        else:
-            link = f"<{base_link}>"
-            self.message_content = f"Link for **{self.selected_file}**:\n\n{link}"
-        await interaction.response.edit_message(content=self.message_content, view=None)
-
-    @discord.ui.button(label="Rerun Search", style=discord.ButtonStyle.blurple, emoji="🔍", row=2)
-    async def button_rerun_query(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.send_modal(SearchModal())
-
-
+        await interaction.response.edit_message(content=message_content, view=self)
 
 @tree.command(name="upload", description="Upload a file to the CDN with optional protection.")
 @discord.app_commands.user_install()
@@ -264,8 +293,14 @@ async def upload_command(interaction: discord.Interaction, file: discord.Attachm
     if not allowed_file(file.filename):
         return await interaction.response.send_message("Error: This file type is not allowed.", ephemeral=True)
     await interaction.response.defer(ephemeral=True)
+
     file_ext = os.path.splitext(file.filename)[1]
-    new_filename = f"{sanitize_filename(custom_name) or uuid.uuid4().hex}{file_ext}"
+    
+    # Safely handle custom_name being None
+    sanitized_name = sanitize_filename(custom_name) if custom_name else None
+    base_name = sanitized_name or uuid.uuid4().hex
+    new_filename = f"{base_name}{file_ext}"
+
     save_path = os.path.join(UPLOAD_FOLDER, new_filename)
     if os.path.exists(save_path):
         return await interaction.followup.send(f"Error: A file named '{new_filename}' already exists.", ephemeral=True)
@@ -288,7 +323,10 @@ async def upload_command(interaction: discord.Interaction, file: discord.Attachm
 @is_authorized()
 async def manage_command(interaction: discord.Interaction, query: str = None):
     view = FileManagementView(query=query)
-    await interaction.response.send_message(view.message_content, view=view, ephemeral=True)
+    message_content = "Select a file to get started."
+    if query:
+        message_content = f"Showing results for \"{query}\". Select a file."
+    await interaction.response.send_message(message_content, view=view, ephemeral=True)
 
 @tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
