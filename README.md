@@ -44,7 +44,7 @@ All configuration is handled through `config.json` within the container filesyst
 
 ---
 
-## 🌐 Accessing the Server
+## Accessing the Server
 
 Once running, access the node at:
 
