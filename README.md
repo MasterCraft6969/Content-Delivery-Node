@@ -48,9 +48,7 @@ All configuration is handled through `config.json` within the container filesyst
 
 Once running, access the node at:
 
-`http://localhost:8000`
-
-(or whatever port is defined in `config.json` / `docker-compose.yml`)
+`http://localhost:8000` (or whatever port is defined in `config.json`)
 
 ---
 
